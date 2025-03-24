@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+gspread
+oauth2client
+yfinance
+pandas==2.2.2
+numpy==1.26.4
+gspread_dataframe
