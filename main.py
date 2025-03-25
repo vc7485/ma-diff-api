@@ -15,19 +15,9 @@ scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/au
 creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
 client = gspread.authorize(creds)
 
-# 🧾 Input model
+# 🔧 Sheet Request (only need sheet_id from Google Apps Script)
 class SettingsRequest(BaseModel):
     sheet_id: str
-    ticker: str
-    start_date: str
-    end_date: str
-    use_optimization: bool
-    use_precomputed_ma: bool
-    ma_min: int
-    ma_max: int
-    diff_min: float
-    diff_max: float
-    diff_step: float
 
 # 📈 Metric calculations
 def calculate_metrics(df, initial_capital=10000, transaction_cost=0.001):
@@ -59,7 +49,7 @@ def ma_diff_strategy(df, ma_period, diff_threshold, trade_type="both"):
         df['Signal'] = (df['Diff'] > diff_threshold).astype(int)
     elif trade_type == "sell":
         df['Signal'] = (df['Diff'] < -diff_threshold).astype(int) * -1
-    else:  # both
+    else:
         df['Signal'] = 0
         df.loc[df['Diff'] > diff_threshold, 'Signal'] = 1
         df.loc[df['Diff'] < -diff_threshold, 'Signal'] = -1
@@ -68,7 +58,7 @@ def ma_diff_strategy(df, ma_period, diff_threshold, trade_type="both"):
     df['Trade'] = df['Position'].diff().fillna(0)
     return df
 
-# 🔁 Run a single combo
+# 🔁 Single combo run
 def run_combination(df, ma, diff, trade_type):
     df_copy = df.copy()
     df_copy = ma_diff_strategy(df_copy, ma, diff, trade_type)
@@ -81,20 +71,39 @@ def run_combination(df, ma, diff, trade_type):
         'Date': df_copy.index
     }
 
-# 🧪 Main Endpoint
-@app.post("/run-backtest")
-def run_backtest(settings: SettingsRequest):
-    print("⚙️ Starting optimization...")
+# 📥 Pull settings from Google Sheet tab
+def read_settings_from_sheet(sheet):
+    ws = sheet.worksheet("Settings")
+    df = pd.DataFrame(ws.get_all_records())
+    row = df.iloc[0]
+    return {
+        'ticker': row['ticker'],
+        'start_date': row['start_date'],
+        'end_date': row['end_date'],
+        'use_optimization': row['use_optimization'],
+        'use_precomputed_ma': row['use_precomputed_ma'],
+        'ma_min': int(row['ma_min']),
+        'ma_max': int(row['ma_max']),
+        'diff_min': float(row['diff_min']),
+        'diff_max': float(row['diff_max']),
+        'diff_step': float(row['diff_step'])
+    }
 
-    df = yf.download(settings.ticker, start=settings.start_date, end=settings.end_date)
+# 🚀 Main API Endpoint
+@app.post("/run-backtest")
+def run_backtest(request: SettingsRequest):
+    print("📥 Reading sheet settings...")
+    sheet = client.open_by_key(request.sheet_id)
+    config = read_settings_from_sheet(sheet)
+
+    df = yf.download(config['ticker'], start=config['start_date'], end=config['end_date'])
     df = df[['Close']].dropna()
 
-    ma_list = range(settings.ma_min, settings.ma_max + 1)
-    diff_list = np.arange(settings.diff_min, settings.diff_max + settings.diff_step, settings.diff_step)
+    ma_list = range(config['ma_min'], config['ma_max'] + 1)
+    diff_list = np.arange(config['diff_min'], config['diff_max'] + config['diff_step'], config['diff_step'])
     combos = [(ma, diff) for ma in ma_list for diff in diff_list]
 
     trade_modes = ["buy", "sell", "both"]
-    sheet = client.open_by_key(settings.sheet_id)
 
     for mode in trade_modes:
         print(f"🔄 Optimizing {mode}...")
@@ -114,5 +123,5 @@ def run_backtest(settings: SettingsRequest):
 
         set_with_dataframe(ws, top10)
 
-    print("✅ Optimization complete!")
-    return {"status": "success", "message": "Top 10 results for Buy/Sell/Both saved to Google Sheets."}
+    print("✅ Done!")
+    return {"status": "success", "message": "Top 10 Buy/Sell/Both strategies saved to sheet."}
