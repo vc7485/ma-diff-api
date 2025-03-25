@@ -15,11 +15,11 @@ scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/au
 creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
 client = gspread.authorize(creds)
 
-# 🔧 Sheet Request (only need sheet_id from Google Apps Script)
+# 🔧 Sheet Request Model
 class SettingsRequest(BaseModel):
     sheet_id: str
 
-# 📈 Metric calculations
+# 📈 Metric Calculation
 def calculate_metrics(df, initial_capital=10000, transaction_cost=0.001):
     df['Returns'] = df['Position'].shift(1) * df['Close'].pct_change()
     df['Returns'] -= transaction_cost * df['Trade'].fillna(0).abs()
@@ -40,7 +40,7 @@ def calculate_metrics(df, initial_capital=10000, transaction_cost=0.001):
         'Calmar Ratio': calmar_ratio
     }
 
-# 🧠 Strategy logic
+# 🧠 Strategy Logic
 def ma_diff_strategy(df, ma_period, diff_threshold, trade_type="both"):
     df['MA'] = df['Close'].rolling(window=ma_period).mean()
     df['Diff'] = df['Close'] - df['MA']
@@ -58,7 +58,7 @@ def ma_diff_strategy(df, ma_period, diff_threshold, trade_type="both"):
     df['Trade'] = df['Position'].diff().fillna(0)
     return df
 
-# 🔁 Single combo run
+# 🔁 Run One Combination
 def run_combination(df, ma, diff, trade_type):
     df_copy = df.copy()
     df_copy = ma_diff_strategy(df_copy, ma, diff, trade_type)
@@ -71,7 +71,7 @@ def run_combination(df, ma, diff, trade_type):
         'Date': df_copy.index
     }
 
-# 📥 Pull settings from Google Sheet tab
+# 📥 Read from Google Sheet
 def read_settings_from_sheet(sheet):
     ws = sheet.worksheet("Settings")
     df = pd.DataFrame(ws.get_all_records())
@@ -89,11 +89,14 @@ def read_settings_from_sheet(sheet):
         'diff_step': float(row['diff_step'])
     }
 
-# 🚀 Main API Endpoint
+# 🚀 Main Endpoint
 @app.post("/run-backtest")
 def run_backtest(request: SettingsRequest):
     print("📥 Reading sheet settings...")
     sheet = client.open_by_key(request.sheet_id)
+    settings_ws = sheet.worksheet("Settings")
+    settings_ws.update("A2", "🟡 Running...")
+
     config = read_settings_from_sheet(sheet)
 
     df = yf.download(config['ticker'], start=config['start_date'], end=config['end_date'])
@@ -108,20 +111,4 @@ def run_backtest(request: SettingsRequest):
     for mode in trade_modes:
         print(f"🔄 Optimizing {mode}...")
 
-        with ThreadPoolExecutor() as executor:
-            results = list(executor.map(lambda args: run_combination(df, *args, mode), combos))
-
-        result_df = pd.DataFrame(results).drop(columns=["Equity Curve", "Date"])
-        top10 = result_df.sort_values("Sharpe Ratio", ascending=False).head(10)
-
-        tab_name = f"Top 10 - {mode.capitalize()}"
-        try:
-            ws = sheet.worksheet(tab_name)
-            ws.clear()
-        except:
-            ws = sheet.add_worksheet(title=tab_name, rows=100, cols=20)
-
-        set_with_dataframe(ws, top10)
-
-    print("✅ Done!")
-    return {"status": "success", "message": "Top 10 Buy/Sell/Both strategies saved to sheet."}
+        with ThreadPoolExecutor() as executor &#8203;:contentReference[oaicite:0]{index=0}&#8203;
