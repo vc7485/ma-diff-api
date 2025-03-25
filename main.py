@@ -3,8 +3,9 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 from gspread_dataframe import set_with_dataframe
+import os
+from google.oauth2.service_account import Credentials
 
 app = FastAPI()
 
@@ -13,12 +14,13 @@ SHEET_NAME = "MA Diff Optimization"
 SETTINGS_TAB = "Settings"
 OUTPUT_TAB = "Output"
 
-# Replace with your Google Service Account credentials JSON
-SERVICE_ACCOUNT_FILE = "gspread-key.json"
+# ✅ Load path from Render secret environment variable
+SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH")
 
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
-client = gspread.authorize(creds)
+# ✅ Use modern Google credentials (not deprecated oauth2client)
+scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+credentials = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
+client = gspread.authorize(credentials)
 
 # Helper to read vertical settings as a dict
 def read_settings(sheet):
@@ -124,3 +126,5 @@ def run_backtest():
     set_with_dataframe(sheet_output, top10)
 
     return {"message": "Backtest completed and results written to Google Sheet."}
+
+# Update to use Render secret path
