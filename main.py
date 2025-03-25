@@ -1,9 +1,6 @@
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import matplotlib.pyplot as plt
-import io
-import base64
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from gspread_dataframe import set_with_dataframe
@@ -145,7 +142,14 @@ def run_backtest(sheet_id: dict):
 
         df_results = pd.DataFrame(results)
 
-        # Output top 10
+        # Remove unnecessary columns
+        df_results = df_results.drop(columns=["Equity Curve", "Dates"])
+
+        # Round selected numeric columns to 3 decimals
+        round_cols = ["Sharpe Ratio", "Annualized Return (%)", "Max Drawdown ($)", "Max Drawdown (%)", "Calmar Ratio", "Final Capital ($)"]
+        df_results[round_cols] = df_results[round_cols].round(3)
+
+        # Output top 10 to Output tab
         top10 = df_results.sort_values(by="Sharpe Ratio", ascending=False).head(10)
         sheet.worksheet(OUTPUT_TAB).clear()
         set_with_dataframe(sheet.worksheet(OUTPUT_TAB), top10)
@@ -155,8 +159,8 @@ def run_backtest(sheet_id: dict):
         sheet.worksheet(HEATMAP_TAB).clear()
         set_with_dataframe(sheet.worksheet(HEATMAP_TAB), heatmap_data)
 
-        # Output Equity Curve
-        best = df_results.sort_values(by="Sharpe Ratio", ascending=False).iloc[0]
+        # Output Equity Curve (from best result)
+        best = results[df_results["Sharpe Ratio"].idxmax()]
         equity_curve = pd.DataFrame({
             "Date": best["Dates"],
             "Equity Curve Capital": best["Equity Curve"]
