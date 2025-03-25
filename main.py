@@ -118,8 +118,15 @@ def run_backtest(sheet_id: dict):
 
         df = fetch_yahoo_data(ticker, start_date, end_date, interval)
 
-        ma_range = np.arange(int(settings.get("MA Min", 10)), int(settings.get("MA Max", 20)) + 1, 1)
-        diff_range = np.round(np.arange(float(settings.get("Diff Min", 0.01)), float(settings.get("Diff Max", 0.05)) + float(settings.get("Diff Step", 0.002)), float(settings.get("Diff Step", 0.002)), 3)
+        ma_min = int(settings.get("MA Min", 10))
+        ma_max = int(settings.get("MA Max", 20))
+        ma_range = np.arange(ma_min, ma_max + 1, 1)
+
+        diff_min = float(settings.get("Diff Min", 0.01))
+        diff_max = float(settings.get("Diff Max", 0.05))
+        diff_step = float(settings.get("Diff Step", 0.002))
+        diff_range = np.round(np.arange(diff_min, diff_max + diff_step, diff_step), 3)
+
         param_grid = [(ma, diff) for ma in ma_range for diff in diff_range]
 
         for mode in TRADE_MODES:
@@ -146,4 +153,4 @@ def run_backtest(sheet_id: dict):
             print(f"✅ {tab_name} written.")
 
     Thread(target=background_job).start()
-    return {"message": "📊 Backtest started! Check it later."}
+    return {"message": "📊 Backtest started! Check the Top 10 tabs shortly."}
