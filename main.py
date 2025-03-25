@@ -1,172 +1,132 @@
+from fastapi import FastAPI, Request
+from pydantic import BaseModel
+from typing import List
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import matplotlib.pyplot as plt
+import io
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from gspread_dataframe import set_with_dataframe
-from fastapi import FastAPI
-from threading import Thread
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
+import datetime
+import time
 
 app = FastAPI()
 
-# Google Sheets setup
-SHEET_NAME = "MA Diff Optimization"
-SETTINGS_TAB = "Settings"
-OUTPUT_TAB = "Output"
-HEATMAP_TAB = "Heatmap"
-EQUITY_CURVE_TAB = "Equity Curve"
-
-SERVICE_ACCOUNT_FILE = "/etc/secrets/google_ma_diff_service_account"
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
+# Google Sheets Setup
+scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
 client = gspread.authorize(creds)
 
-# Helper to read settings
-def read_settings(sheet):
-    rows = sheet.get_all_values()
-    return {r[0].strip(): r[1].strip() for r in rows if len(r) >= 2}
+# Google Sheet ID
+SHEET_ID = "YOUR_GOOGLE_SHEET_ID"
+SHEET = client.open_by_key(SHEET_ID)
 
-# Download data
-def fetch_yahoo_data(ticker, start_date, end_date, interval):
-    data = yf.download(ticker, start=start_date, end=end_date, interval=interval)
-    if data.empty:
-        raise ValueError("No data found")
-    data['Price'] = data['Adj Close'] if 'Adj Close' in data.columns else data['Close']
-    data.dropna(inplace=True)
-    return data
+# Request Model
+class SettingsRequest(BaseModel):
+    ticker: str
+    start_date: str
+    end_date: str
+    use_optimization: bool
+    use_precomputed_ma: bool
+    ma_min: int
+    ma_max: int
+    diff_min: float
+    diff_max: float
+    diff_step: float
 
-# Generate trade signals
-def generate_trade_signals(df, strategy_params, config):
-    ma = int(strategy_params['ma_period'])
-    threshold = strategy_params['diff_threshold']
-    df['MovingAverage'] = df['Price'].rolling(window=ma, min_periods=1).mean()
-    df['Diff'] = df['Price'] / df['MovingAverage'] - 1
-    df['Signal'] = 0
-    if config["execute_buy"]:
-        df.loc[df['Diff'] > threshold, 'Signal'] = 1
-    if config["execute_sell"]:
-        df.loc[df['Diff'] < -threshold, 'Signal'] = -1
-    df['Position'] = df['Signal'].shift(1, fill_value=0)
-    df['Next_Open'] = df['Price'].shift(-1)
-    df['Entry_Price'] = df['Next_Open'].shift(-1)
-    df['Daily Return'] = df['Entry_Price'].pct_change().fillna(0)
-    df['Strategy Return'] = df['Daily Return'] * df['Position']
-    trade_executed = df['Position'].diff().fillna(0) != 0
-    if config["use_percentage_cost"]:
-        df.loc[trade_executed, 'Strategy Return'] -= config["percentage_cost"]
-    else:
-        df.loc[trade_executed, 'Strategy Return'] -= config["fixed_cost"] / config["initial_capital"]
-    df['Cumulative Return'] = (1 + df['Strategy Return']).cumprod()
-    df['Equity_Curve_Capital'] = df['Cumulative Return'] * config["initial_capital"]
-    return df
+def calculate_metrics(df, initial_capital=10000, transaction_cost=0.001):
+    df['Returns'] = df['Position'].shift(1) * df['Close'].pct_change()
+    df['Returns'] -= transaction_cost * df['Trade'].fillna(0).abs()
+    df['Equity'] = (1 + df['Returns']).cumprod() * initial_capital
 
-# Optimization logic
-def optimize_params(ma_period, diff_threshold, data, config):
-    params = {"ma_period": ma_period, "diff_threshold": diff_threshold}
-    df = generate_trade_signals(data.copy(), params, config)
-    std = df['Strategy Return'].std()
-    sharpe = (df['Strategy Return'].mean() / std) * np.sqrt(252) if std > 0 else np.nan
-    annualized = df['Strategy Return'].mean() * 252
-    max_dd = (df['Equity_Curve_Capital'].cummax() - df['Equity_Curve_Capital']).max()
-    max_dd_pct = (max_dd / df['Equity_Curve_Capital'].cummax()).max() * 100
-    calmar = annualized / abs(max_dd) if max_dd != 0 else 0
-    final_capital = df['Equity_Curve_Capital'].iloc[-1]
-    df['drawdown_end'] = df['Equity_Curve_Capital'].eq(df['Equity_Curve_Capital'].cummax())
-    df['recovery_period'] = df.groupby(df['drawdown_end'].cumsum()).cumcount() + 1
-    df['recovery_period'] = df['recovery_period'].where(~df['drawdown_end'], 0)
-    MRP = df['recovery_period'].max()
+    roi = df['Equity'].iloc[-1] / initial_capital - 1
+    annualized_return = (df['Equity'].iloc[-1] / initial_capital) ** (252 / len(df)) - 1
+    sharpe_ratio = df['Returns'].mean() / df['Returns'].std() * np.sqrt(252)
+    max_drawdown = ((df['Equity'] / df['Equity'].cummax()) - 1).min()
+    calmar_ratio = annualized_return / abs(max_drawdown)
+
     return {
-        'MA Period': ma_period,
-        'Diff Threshold': diff_threshold,
-        'Sharpe Ratio': sharpe,
-        'Annualized Return (%)': annualized * 100,
-        'Max Drawdown ($)': max_dd,
-        'Max Drawdown (%)': max_dd_pct,
-        'Calmar Ratio': calmar,
-        'Final Capital ($)': final_capital,
-        'Maximum Recovery Period': MRP,
-        'Equity Curve': df['Equity_Curve_Capital'].tolist(),
-        'Dates': df.index.strftime('%Y-%m-%d').tolist()
+        'Final Capital': df['Equity'].iloc[-1],
+        'ROI': roi,
+        'Annualized Return': annualized_return,
+        'Sharpe Ratio': sharpe_ratio,
+        'Max Drawdown': max_drawdown,
+        'Calmar Ratio': calmar_ratio
     }
 
-# API endpoint
+def ma_diff_strategy(df, ma_period, diff_threshold):
+    df['MA'] = df['Close'].rolling(window=ma_period).mean()
+    df['Diff'] = df['Close'] - df['MA']
+    df['Signal'] = (df['Diff'] > diff_threshold).astype(int)
+    df['Position'] = df['Signal'].shift(1).fillna(0)
+    df['Trade'] = df['Position'].diff().fillna(0)
+    return df
+
+def run_single_combination(df, ma_period, diff_threshold):
+    df_copy = df.copy()
+    df_copy = ma_diff_strategy(df_copy, ma_period, diff_threshold)
+    metrics = calculate_metrics(df_copy)
+    return {
+        'MA Period': ma_period,
+        'Diff Threshold': round(diff_threshold, 3),
+        **{k: round(v, 3) for k, v in metrics.items()},
+        'Equity Curve': df_copy['Equity'].values,
+        'Date': df_copy.index
+    }
+
 @app.post("/run-backtest")
-def run_backtest(sheet_id: dict):
-    def background_job():
-        sheet = client.open_by_key(sheet_id["sheet_id"])
-        settings = read_settings(sheet.worksheet(SETTINGS_TAB))
+def run_backtest(settings: SettingsRequest):
+    print("⚙️ Starting optimization...")
 
-        # Extract settings
-        ticker = settings.get("Ticker")
-        start_date = settings.get("Start Date")
-        end_date = settings.get("End Date")
-        timeframe = settings.get("Timeframe", "1d")
-        capital = float(settings.get("Initial Capital", 1000))
-        config = {
-            "initial_capital": capital,
-            "use_percentage_cost": settings.get("Use % Cost", "TRUE").upper() == "TRUE",
-            "percentage_cost": float(settings.get("% Transaction Cost", 0.0006)),
-            "fixed_cost": float(settings.get("Fixed Cost", 0)),
-            "execute_buy": settings.get("Enable Buy", "TRUE").upper() == "TRUE",
-            "execute_sell": settings.get("Enable Sell", "FALSE").upper() == "TRUE",
-            "use_parallel": settings.get("Use Parallel", "TRUE").upper() == "TRUE"
-        }
+    df = yf.download(settings.ticker, start=settings.start_date, end=settings.end_date)
+    df = df[['Close']].dropna()
 
-        use_opt = settings.get("Use Optimization", "TRUE").upper() == "TRUE"
-        ma_min = int(settings.get("MA Min", 10))
-        ma_max = int(settings.get("MA Max", 20))
-        diff_min = float(settings.get("Diff Min", 0.01))
-        diff_max = float(settings.get("Diff Max", 0.05))
-        diff_step = float(settings.get("Diff Step", 0.002))
+    ma_list = range(settings.ma_min, settings.ma_max + 1)
+    diff_list = np.arange(settings.diff_min, settings.diff_max + settings.diff_step, settings.diff_step)
 
-        data = fetch_yahoo_data(ticker, start_date, end_date, timeframe)
-        param_grid = [(ma, round(diff, 3)) for ma in range(ma_min, ma_max+1)
-                      for diff in np.arange(diff_min, diff_max+diff_step, diff_step)]
+    combinations = [(ma, diff) for ma in ma_list for diff in diff_list]
+    results = []
+    progress_intervals = max(1, len(combinations) // 10)
 
-        results = []
+    def run_and_log(i, combo):
+        ma, diff = combo
+        result = run_single_combination(df, ma, diff)
+        if i % progress_intervals == 0:
+            print(f"🔄 Progress: {round(i/len(combinations)*100)}%")
+        return result
 
-        if config["use_parallel"]:
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                futures = {
-                    executor.submit(optimize_params, ma, diff, data, config): (ma, diff)
-                    for ma, diff in param_grid
-                }
-                for future in as_completed(futures):
-                    result = future.result()
-                    results.append(result)
-        else:
-            for ma, diff in param_grid:
-                result = optimize_params(ma, diff, data, config)
-                results.append(result)
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(run_and_log, i, combo) for i, combo in enumerate(combinations)]
+        for f in futures:
+            results.append(f.result())
 
-        df_results = pd.DataFrame(results)
+    results_df = pd.DataFrame(results)
 
-        # Remove unnecessary columns
-        df_results = df_results.drop(columns=["Equity Curve", "Dates"])
+    best_row = results_df.sort_values("Sharpe Ratio", ascending=False).iloc[0]
+    best_curve = best_row['Equity Curve']
+    best_dates = best_row['Date']
 
-        # Round selected numeric columns to 3 decimals
-        round_cols = ["Sharpe Ratio", "Annualized Return (%)", "Max Drawdown ($)", "Max Drawdown (%)", "Final Capital ($)"]
-        df_results[round_cols] = df_results[round_cols].round(3)
+    # Write to Google Sheets
+    print("📤 Writing results to Google Sheets...")
+    SHEET.worksheet("Settings").clear()
+    set_with_dataframe(SHEET.worksheet("Settings"), pd.DataFrame([settings.dict()]))
 
-        # Output top 10 to Output tab
-        top10 = df_results.sort_values(by="Sharpe Ratio", ascending=False).head(10)
-        sheet.worksheet(OUTPUT_TAB).clear()
-        set_with_dataframe(sheet.worksheet(OUTPUT_TAB), top10)
+    output_df = results_df.drop(columns=["Equity Curve", "Date"])
+    SHEET.worksheet("Output").clear()
+    set_with_dataframe(SHEET.worksheet("Output"), output_df)
 
-        # Output Heatmap
-        heatmap_data = df_results.pivot(index='MA Period', columns='Diff Threshold', values='Sharpe Ratio')
-        sheet.worksheet(HEATMAP_TAB).clear()
-        set_with_dataframe(sheet.worksheet(HEATMAP_TAB), heatmap_data)
+    # Create Heatmap
+    heatmap = results_df.pivot("MA Period", "Diff Threshold", "Sharpe Ratio")
+    SHEET.worksheet("Heatmap").clear()
+    set_with_dataframe(SHEET.worksheet("Heatmap"), heatmap)
 
-        # Output Equity Curve (from best result)
-        best = results[df_results["Sharpe Ratio"].idxmax()]
-        equity_curve = pd.DataFrame({
-            "Date": best["Dates"],
-            "Equity Curve Capital": best["Equity Curve"]
-        })
-        sheet.worksheet(EQUITY_CURVE_TAB).clear()
-        set_with_dataframe(sheet.worksheet(EQUITY_CURVE_TAB), equity_curve)
+    # Create Equity Curve
+    equity_df = pd.DataFrame({"Date": best_dates, "Equity": best_curve})
+    SHEET.worksheet("Equity Curve").clear()
+    set_with_dataframe(SHEET.worksheet("Equity Curve"), equity_df)
 
-    Thread(target=background_job).start()
-    return {"message": "✅ Backtest started! Check Output, Heatmap & Equity Curve tabs shortly."}
+    print("✅ Optimization complete!")
+    return {"status": "success", "top_result": best_row.to_dict()}
