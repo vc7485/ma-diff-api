@@ -146,7 +146,7 @@ def run_backtest(sheet_id: dict):
         df_results = df_results.drop(columns=["Equity Curve", "Dates"])
 
         # Round selected numeric columns to 3 decimals
-        round_cols = ["Sharpe Ratio", "Annualized Return (%)", "Max Drawdown ($)", "Max Drawdown (%)", "Calmar Ratio", "Final Capital ($)"]
+        round_cols = ["Sharpe Ratio", "Annualized Return (%)", "Max Drawdown ($)", "Max Drawdown (%)", "Final Capital ($)"]
         df_results[round_cols] = df_results[round_cols].round(3)
 
         # Output top 10 to Output tab
