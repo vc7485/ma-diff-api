@@ -146,4 +146,4 @@ def run_backtest(sheet_id: dict):
             print(f"✅ {tab_name} written.")
 
     Thread(target=background_job).start()
-    return {"message": "📊 Backtest started! Check the Google Sheet in 30–60 seconds."}
+    return {"message": "📊 Backtest started! Check it later."}
