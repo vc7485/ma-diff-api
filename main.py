@@ -10,16 +10,16 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = FastAPI()
 
-# 🔐 Google Sheets Credentials
+# Google Sheets Credentials
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
 client = gspread.authorize(creds)
 
-# 🔧 Sheet Request Model
+# Sheet Request Model
 class SettingsRequest(BaseModel):
     sheet_id: str
 
-# 📈 Metric Calculation
+# Metric Calculation
 def calculate_metrics(df, initial_capital=10000, transaction_cost=0.001):
     df['Returns'] = df['Position'].shift(1) * df['Close'].pct_change()
     df['Returns'] -= transaction_cost * df['Trade'].fillna(0).abs()
@@ -40,7 +40,7 @@ def calculate_metrics(df, initial_capital=10000, transaction_cost=0.001):
         'Calmar Ratio': calmar_ratio
     }
 
-# 🧠 Strategy Logic
+# Strategy Logic
 def ma_diff_strategy(df, ma_period, diff_threshold, trade_type="both"):
     df['MA'] = df['Close'].rolling(window=ma_period).mean()
     df['Diff'] = df['Close'] - df['MA']
@@ -58,7 +58,7 @@ def ma_diff_strategy(df, ma_period, diff_threshold, trade_type="both"):
     df['Trade'] = df['Position'].diff().fillna(0)
     return df
 
-# 🔁 Run One Combination
+# Run One Combination
 def run_combination(df, ma, diff, trade_type):
     df_copy = df.copy()
     df_copy = ma_diff_strategy(df_copy, ma, diff, trade_type)
@@ -71,10 +71,11 @@ def run_combination(df, ma, diff, trade_type):
         'Date': df_copy.index
     }
 
-# 📥 Read from Google Sheet
+# Read Settings from Sheet
 def read_settings_from_sheet(sheet):
     ws = sheet.worksheet("Settings")
     df = pd.DataFrame(ws.get_all_records())
+    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
     row = df.iloc[0]
     return {
         'ticker': row['ticker'],
@@ -89,7 +90,7 @@ def read_settings_from_sheet(sheet):
         'diff_step': float(row['diff_step'])
     }
 
-# 🚀 Main Endpoint
+# Main API Endpoint
 @app.post("/run-backtest")
 def run_backtest(request: SettingsRequest):
     print("📥 Reading sheet settings...")
