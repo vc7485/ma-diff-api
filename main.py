@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI 
 from pydantic import BaseModel
 import pandas as pd
 import numpy as np
@@ -7,6 +7,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from gspread_dataframe import set_with_dataframe
 from concurrent.futures import ThreadPoolExecutor
+from gspread.exceptions import WorksheetNotFound  # 👈 Import this
 
 app = FastAPI()
 
@@ -119,7 +120,8 @@ def run_backtest(request: SettingsRequest):
         try:
             ws = sheet.worksheet(tab_name)
             ws.clear()
-        except:
+        except WorksheetNotFound:
+            print(f"🆕 Creating new sheet: {tab_name}")
             ws = sheet.add_worksheet(title=tab_name, rows=100, cols=20)
 
         set_with_dataframe(ws, top10)
