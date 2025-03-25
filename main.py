@@ -111,4 +111,21 @@ def run_backtest(request: SettingsRequest):
     for mode in trade_modes:
         print(f"🔄 Optimizing {mode}...")
 
-        with ThreadPoolExecutor() as executor &#8203;:contentReference[oaicite:0]{index=0}&#8203;
+        with ThreadPoolExecutor() as executor:
+            results = list(executor.map(lambda args: run_combination(df, *args, mode), combos))
+
+        result_df = pd.DataFrame(results).drop(columns=["Equity Curve", "Date"])
+        top10 = result_df.sort_values("Sharpe Ratio", ascending=False).head(10)
+
+        tab_name = f"Top 10 - {mode.capitalize()}"
+        try:
+            ws = sheet.worksheet(tab_name)
+            ws.clear()
+        except:
+            ws = sheet.add_worksheet(title=tab_name, rows=100, cols=20)
+
+        set_with_dataframe(ws, top10)
+
+    settings_ws.update("A2", "✅ Output Ready")
+    print("✅ Done!")
+    return {"status": "success", "message": "Output Ready"}
