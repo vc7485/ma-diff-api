@@ -10,16 +10,16 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = FastAPI()
 
-# Google Sheets Credentials
+# 🔐 Google Sheets Credentials
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
 client = gspread.authorize(creds)
 
-# Sheet Request Model
+# 🔧 Sheet Request Model
 class SettingsRequest(BaseModel):
     sheet_id: str
 
-# Metric Calculation
+# 📈 Metric Calculation
 def calculate_metrics(df, initial_capital=10000, transaction_cost=0.001):
     df['Returns'] = df['Position'].shift(1) * df['Close'].pct_change()
     df['Returns'] -= transaction_cost * df['Trade'].fillna(0).abs()
@@ -40,7 +40,7 @@ def calculate_metrics(df, initial_capital=10000, transaction_cost=0.001):
         'Calmar Ratio': calmar_ratio
     }
 
-# Strategy Logic
+# 🧠 Strategy Logic
 def ma_diff_strategy(df, ma_period, diff_threshold, trade_type="both"):
     df['MA'] = df['Close'].rolling(window=ma_period).mean()
     df['Diff'] = df['Close'] - df['MA']
@@ -58,7 +58,7 @@ def ma_diff_strategy(df, ma_period, diff_threshold, trade_type="both"):
     df['Trade'] = df['Position'].diff().fillna(0)
     return df
 
-# Run One Combination
+# 🔁 Run One Combination
 def run_combination(df, ma, diff, trade_type):
     df_copy = df.copy()
     df_copy = ma_diff_strategy(df_copy, ma, diff, trade_type)
@@ -71,26 +71,23 @@ def run_combination(df, ma, diff, trade_type):
         'Date': df_copy.index
     }
 
-# Read Settings from Sheet
+# 📥 Read from Google Sheet (Vertical Format)
 def read_settings_from_sheet(sheet):
-    ws = sheet.worksheet("Settings")
-    df = pd.DataFrame(ws.get_all_records())
-    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
-    row = df.iloc[0]
+    settings_dict = {row[0].strip().lower().replace(" ", "_"): row[1] for row in sheet.worksheet("Settings").get_all_values() if len(row) >= 2}
     return {
-        'ticker': row['ticker'],
-        'start_date': row['start_date'],
-        'end_date': row['end_date'],
-        'use_optimization': row['use_optimization'],
-        'use_precomputed_ma': row['use_precomputed_ma'],
-        'ma_min': int(row['ma_min']),
-        'ma_max': int(row['ma_max']),
-        'diff_min': float(row['diff_min']),
-        'diff_max': float(row['diff_max']),
-        'diff_step': float(row['diff_step'])
+        'ticker': settings_dict['ticker'],
+        'start_date': settings_dict['start_date'],
+        'end_date': settings_dict['end_date'],
+        'use_optimization': settings_dict['use_optimization'] == 'TRUE',
+        'use_precomputed_ma': settings_dict['use_precomputed_ma'] == 'TRUE',
+        'ma_min': int(settings_dict['ma_min']),
+        'ma_max': int(settings_dict['ma_max']),
+        'diff_min': float(settings_dict['diff_min']),
+        'diff_max': float(settings_dict['diff_max']),
+        'diff_step': float(settings_dict['diff_step']),
     }
 
-# Main API Endpoint
+# 🚀 Main Endpoint
 @app.post("/run-backtest")
 def run_backtest(request: SettingsRequest):
     print("📥 Reading sheet settings...")
