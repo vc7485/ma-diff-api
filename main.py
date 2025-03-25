@@ -14,7 +14,7 @@ app = FastAPI()
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
 client = gspread.authorize(creds)
-SHEET_ID = "YOUR_GOOGLE_SHEET_ID"
+SHEET_ID = "1aScqobm7_JkdUNd-O4a32a1ZwJK3S-RMfMbUuemSVYs"
 SHEET = client.open_by_key(SHEET_ID)
 
 # === Settings Model from Google Sheets ===
