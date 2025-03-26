@@ -1,6 +1,3 @@
-# Rewriting the file after code execution state reset
-
-updated_main_option_a = """
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -133,5 +130,4 @@ def run_optimization(request: OptimizationRequest):
     return {"status": "✅ Top 10 result updated based on trade type: " + trade_type}
 """
 
-with open("/mnt/data/main_option_a.py", "w") as f:
-    f.write(updated_main_option_a)
+
