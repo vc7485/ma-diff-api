@@ -1,191 +1,141 @@
-from fastapi import FastAPI
+# Prepare Option A version of main.py as per user request (no Heatmap or Equity Curve yet)
+# Includes only logic for Backtest Trade Type and writing to "Top 10" sheet
+
+main_py_option_a = """
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from fastapi import FastAPI
+from pydantic import BaseModel
+from concurrent.futures import ThreadPoolExecutor
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from gspread_dataframe import set_with_dataframe
-from threading import Thread
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
+from datetime import datetime
+from typing import List
 
 app = FastAPI()
 
-# Google Sheets Setup
-SETTINGS_TAB = "Settings"
-TOP_10_TAB = "Top 10"
-SERVICE_ACCOUNT_FILE = "/etc/secrets/google_ma_diff_service_account"
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
-client = gspread.authorize(creds)
+class OptimizationRequest(BaseModel):
+    sheet_id: str
+    service_account_info: dict
 
-# ✅ Write status to B1 in Settings sheet
-def update_status(sheet, message):
-    try:
-        worksheet = sheet.worksheet(SETTINGS_TAB)
-        worksheet.update('B1', message)
-        print(f"📣 Status Updated: {message}")
-    except Exception as e:
-        print("⚠️ Failed to update status:", str(e))
+def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate=0.0):
+    excess_returns = returns - risk_free_rate / 252
+    return_ratio = excess_returns.mean() / excess_returns.std() if excess_returns.std() != 0 else 0
+    return return_ratio * np.sqrt(252)
 
-# Read Settings
-def read_settings(sheet):
-    rows = sheet.get_all_values()
-    settings = {}
-    for row in rows:
-        if len(row) < 2:
-            continue
-        key = row[0].strip()
-        value = row[1].strip()
-        if not key or not value:
-            continue
-        if "parameters for optimization" in key.lower():
-            continue
-        settings[key] = value
-    return settings
+def get_sheet_config(sheet):
+    config = {}
+    data = sheet.get_all_values()
+    for row in data:
+        if len(row) >= 2:
+            key = row[0].strip()
+            value = row[1].strip()
+            if key:
+                config[key] = value
+    return config
 
-# Download Price Data
-def fetch_yahoo_data(ticker, start_date, end_date, interval):
-    df = yf.download(ticker, start=start_date, end=end_date, interval=interval)
-    if df.empty:
-        raise ValueError("No data found")
-    df['Price'] = df['Adj Close'] if 'Adj Close' in df.columns else df['Close']
-    df.dropna(inplace=True)
-    return df
+def run_backtest(ticker, start_date, end_date, ma_period, diff_threshold, trade_type, initial_capital, use_percentage_cost, percent_cost, fixed_cost):
+    df = yf.download(ticker, start=start_date, end=end_date)
+    df = df[['Open', 'Close']]
+    df['MA'] = df['Close'].rolling(window=ma_period).mean()
+    df['MA_Diff'] = df['Close'] - df['MA']
 
-# Generate Strategy Returns
-def generate_signals(df, ma_period, diff_threshold, config, trade_type):
-    df['MA'] = df['Price'].rolling(window=ma_period).mean()
-    df['Diff'] = df['Price'] / df['MA'] - 1
-    df['Signal'] = 0
-
-    if trade_type == "buy":
-        df.loc[df['Diff'] > diff_threshold, 'Signal'] = 1
-    elif trade_type == "sell":
-        df.loc[df['Diff'] < -diff_threshold, 'Signal'] = -1
+    if trade_type == "Buy":
+        df['Signal'] = df['MA_Diff'] > diff_threshold
+    elif trade_type == "Sell":
+        df['Signal'] = df['MA_Diff'] < -diff_threshold
+    elif trade_type == "Both":
+        df['Signal'] = (df['MA_Diff'] > diff_threshold) | (df['MA_Diff'] < -diff_threshold)
     else:
-        df.loc[df['Diff'] > diff_threshold, 'Signal'] = 1
-        df.loc[df['Diff'] < -diff_threshold, 'Signal'] = -1
+        df['Signal'] = False
 
-    df['Position'] = df['Signal'].shift(1).fillna(0)
-    df['Next_Open'] = df['Price'].shift(-1)
-    df['Entry_Price'] = df['Next_Open'].shift(-1)
-    df['Daily Return'] = df['Entry_Price'].pct_change(fill_method=None).fillna(0)
-    df['Strategy Return'] = df['Daily Return'] * df['Position']
+    df['Position'] = df['Signal'].shift(1).fillna(False)
+    df['Trade'] = df['Position'] != df['Position'].shift(1)
 
-    trade_executed = df['Position'].diff().fillna(0) != 0
-    if config["use_percentage_cost"]:
-        df.loc[trade_executed, 'Strategy Return'] -= config["percentage_cost"]
+    df['Returns'] = df['Close'].pct_change().fillna(0)
+    df['Strategy_Returns'] = df['Returns'] * df['Position']
+
+    if use_percentage_cost:
+        df['Transaction_Cost'] = np.where(df['Trade'], percent_cost, 0)
     else:
-        df.loc[trade_executed, 'Strategy Return'] -= config["fixed_cost"] / config["initial_capital"]
+        df['Transaction_Cost'] = np.where(df['Trade'], fixed_cost / df['Close'], 0)
 
-    df['Cumulative Return'] = (1 + df['Strategy Return']).cumprod()
-    df['Equity'] = df['Cumulative Return'] * config["initial_capital"]
-    return df
+    df['Net_Returns'] = df['Strategy_Returns'] - df['Transaction_Cost']
+    df['Equity'] = (1 + df['Net_Returns']).cumprod() * initial_capital
 
-# One Optimization Run
-def evaluate_combo(ma, diff, df, config, trade_type):
-    df = generate_signals(df.copy(), ma, diff, config, trade_type)
-    std = df['Strategy Return'].std()
-    sharpe = (df['Strategy Return'].mean() / std) * np.sqrt(252) if std > 0 else np.nan
-    annualized = df['Strategy Return'].mean() * 252
-    max_dd = (df['Equity'].cummax() - df['Equity']).max()
-    max_dd_pct = (max_dd / df['Equity'].cummax()).max() * 100
-    calmar = annualized / abs(max_dd) if max_dd != 0 else 0
-    final_capital = df['Equity'].iloc[-1]
+    total_return = df['Equity'].iloc[-1] - initial_capital
+    roi = (total_return / initial_capital) * 100
+    sharpe_ratio = calculate_sharpe_ratio(df['Net_Returns'])
+    max_drawdown = ((df['Equity'].cummax() - df['Equity']) / df['Equity'].cummax()).max() * 100
 
-    df['drawdown_end'] = df['Equity'].eq(df['Equity'].cummax())
-    df['recovery_period'] = df.groupby(df['drawdown_end'].cumsum()).cumcount() + 1
-    df['recovery_period'] = df['recovery_period'].where(~df['drawdown_end'], 0)
-    MRP = df['recovery_period'].max()
+    years = (df.index[-1] - df.index[0]).days / 365.25
+    cagr = ((df['Equity'].iloc[-1] / initial_capital) ** (1 / years) - 1) * 100 if years > 0 else 0
 
     return {
-        "MA Period": ma,
-        "Diff Threshold": round(diff, 3),
-        "Sharpe Ratio": round(sharpe, 3),
-        "Annualized Return (%)": round(annualized * 100, 3),
-        "Max Drawdown ($)": round(max_dd, 3),
-        "Max Drawdown (%)": round(max_dd_pct, 3),
-        "Final Capital ($)": round(final_capital, 3),
-        "Maximum Recovery Period": int(MRP)
+        "MA Period": ma_period,
+        "Diff Threshold": diff_threshold,
+        "Sharpe Ratio": round(sharpe_ratio, 3),
+        "Annualized Return": round(cagr, 3),
+        "Max Drawdown": round(max_drawdown, 3),
+        "Final Capital": round(df['Equity'].iloc[-1], 2)
     }
 
-# Full Optimization Logic
-def run_ma_diff_optimization(df, config, trade_type, ma_range, diff_range):
+@app.post("/run-backtest")
+def run_optimization(request: OptimizationRequest):
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(request.service_account_info, scope)
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(request.sheet_id).worksheet("Settings")
+    config = get_sheet_config(sheet)
+
+    ticker = config.get("Ticker", "AAPL")
+    start_date = config.get("Start Date", "2015-01-01")
+    end_date = config.get("End Date", "2024-12-31")
+    initial_capital = float(config.get("Initial Capital $", 1000))
+    use_percentage_cost = config.get("Use % Cost", "TRUE").upper() == "TRUE"
+    percent_cost = float(config.get("% Transaction Cost", 0.0))
+    fixed_cost = float(config.get("Fixed Cost $", 0.0))
+    trade_type = config.get("Backtest Trade Type", "Buy")
+
+    ma_min = int(config.get("MA Min", 5))
+    ma_max = int(config.get("MA Max", 50))
+    diff_min = float(config.get("Diff Min", 0.0))
+    diff_max = float(config.get("Diff Max", 10.0))
+    diff_step = float(config.get("Diff Step", 0.5))
+
     results = []
-    param_grid = [(ma, diff) for ma in ma_range for diff in diff_range]
 
     with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(evaluate_combo, ma, diff, df, config, trade_type) for ma, diff in param_grid]
-        for f in as_completed(futures):
-            results.append(f.result())
+        futures = []
+        for ma in range(ma_min, ma_max + 1):
+            diff = diff_min
+            while diff <= diff_max:
+                futures.append(executor.submit(run_backtest, ticker, start_date, end_date, ma, round(diff, 4),
+                                               trade_type, initial_capital, use_percentage_cost, percent_cost, fixed_cost))
+                diff += diff_step
 
-    return pd.DataFrame(results).sort_values("Sharpe Ratio", ascending=False).head(10).reset_index(drop=True)
+        for future in futures:
+            results.append(future.result())
 
-# Write to Google Sheets
-def write_top_10_to_sheet(df, sheet):
+    top_10_results = sorted(results, key=lambda x: x["Sharpe Ratio"], reverse=True)[:10]
+
+    output_sheet_name = "Top 10"
     try:
-        worksheet = sheet.worksheet(TOP_10_TAB)
-        worksheet.clear()
+        output_sheet = client.open_by_key(request.sheet_id).worksheet(output_sheet_name)
+        output_sheet.clear()
     except:
-        worksheet = sheet.add_worksheet(title=TOP_10_TAB, rows="100", cols="20")
-    set_with_dataframe(worksheet, df)
+        output_sheet = client.open_by_key(request.sheet_id).add_worksheet(title=output_sheet_name, rows="100", cols="20")
 
-# FastAPI Endpoint
-@app.post("/run-backtest")
-def run_backtest(sheet_id: dict):
-    def background_job():
-        sheet = client.open_by_key(sheet_id["sheet_id"])
-        settings = read_settings(sheet.worksheet(SETTINGS_TAB))
-        update_status(sheet, "📊 Backtest started...")
+    headers = list(top_10_results[0].keys())
+    values = [headers] + [[res[h] for h in headers] for res in top_10_results]
+    output_sheet.update("A1", values)
 
-        trade_type = settings.get("Backtest Trade Type", "buy").strip().lower()
-        if trade_type not in ["buy", "sell", "both"]:
-            update_status(sheet, "❌ Invalid Backtest Trade Type")
-            return
+    return {"status": "✅ Top 10 result updated based on trade type: " + trade_type}
+"""
 
-        config = {
-            "initial_capital": float(settings.get("Initial Capital $", 1000)),
-            "use_percentage_cost": settings.get("Use % Cost", "TRUE").upper() == "TRUE",
-            "percentage_cost": float(settings.get("% Transaction Cost", 0.0006)),
-            "fixed_cost": float(settings.get("Fixed Cost $", 0))
-        }
+with open("/mnt/data/main_option_a.py", "w") as f:
+    f.write(main_py_option_a)
 
-        ticker = settings["Ticker"]
-        start_date = settings["Start Date"]
-        end_date = settings["End Date"]
-        interval = settings.get("Timeframe", "1d")
+"/mnt/data/main_option_a.py"
 
-        try:
-            df = fetch_yahoo_data(ticker, start_date, end_date, interval)
-        except Exception as e:
-            update_status(sheet, f"❌ Failed to fetch data: {str(e)}")
-            return
-
-        ma_min = int(settings.get("MA Min", 10))
-        ma_max = int(settings.get("MA Max", 20))
-        ma_range = range(ma_min, ma_max + 1)
-
-        diff_min = float(settings.get("Diff Min", 0.01))
-        diff_max = float(settings.get("Diff Max", 0.05))
-        diff_step = float(settings.get("Diff Step", 0.002))
-        diff_range = np.round(np.arange(diff_min, diff_max + diff_step, diff_step), 3)
-
-        update_status(sheet, "⏳ Optimizing parameters...")
-
-        result_df = run_ma_diff_optimization(df, config, trade_type, ma_range, diff_range)
-
-        update_status(sheet, "✅ Top 10 result is ready!")
-
-        write_top_10_to_sheet(result_df, sheet)
-
-        # Placeholder statuses for future steps
-        update_status(sheet, "⏳ # Heatmap processing... (To be implemented)")
-        time.sleep(1)
-        update_status(sheet, "⏳ # Equity Curve processing... (To be implemented)")
-        time.sleep(1)
-
-        update_status(sheet, "✅ All outputs completed.")
-
-    Thread(target=background_job).start()
-    return {"message": "📊 Backtest started! You can monitor progress in cell B1."}
