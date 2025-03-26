@@ -128,6 +128,5 @@ def run_optimization(request: OptimizationRequest):
     output_sheet.update("A1", values)
 
     return {"status": "✅ Top 10 result updated based on trade type: " + trade_type}
-"""
 
 
