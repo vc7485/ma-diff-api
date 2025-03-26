@@ -1,7 +1,6 @@
-# Prepare Option A version of main.py as per user request (no Heatmap or Equity Curve yet)
-# Includes only logic for Backtest Trade Type and writing to "Top 10" sheet
+# Rewriting the file after code execution state reset
 
-main_py_option_a = """
+updated_main_option_a = """
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -16,7 +15,7 @@ from typing import List
 app = FastAPI()
 
 class OptimizationRequest(BaseModel):
-    sheet_id: str
+    spreadsheet_url: str
     service_account_info: dict
 
 def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate=0.0):
@@ -86,7 +85,7 @@ def run_optimization(request: OptimizationRequest):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(request.service_account_info, scope)
     client = gspread.authorize(creds)
-    sheet = client.open_by_key(request.sheet_id).worksheet("Settings")
+    sheet = client.open_by_url(request.spreadsheet_url).worksheet("Settings")
     config = get_sheet_config(sheet)
 
     ticker = config.get("Ticker", "AAPL")
@@ -122,10 +121,10 @@ def run_optimization(request: OptimizationRequest):
 
     output_sheet_name = "Top 10"
     try:
-        output_sheet = client.open_by_key(request.sheet_id).worksheet(output_sheet_name)
+        output_sheet = client.open_by_url(request.spreadsheet_url).worksheet(output_sheet_name)
         output_sheet.clear()
     except:
-        output_sheet = client.open_by_key(request.sheet_id).add_worksheet(title=output_sheet_name, rows="100", cols="20")
+        output_sheet = client.open_by_url(request.spreadsheet_url).add_worksheet(title=output_sheet_name, rows="100", cols="20")
 
     headers = list(top_10_results[0].keys())
     values = [headers] + [[res[h] for h in headers] for res in top_10_results]
@@ -135,7 +134,4 @@ def run_optimization(request: OptimizationRequest):
 """
 
 with open("/mnt/data/main_option_a.py", "w") as f:
-    f.write(main_py_option_a)
-
-"/mnt/data/main_option_a.py"
-
+    f.write(updated_main_option_a)
