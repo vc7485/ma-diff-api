@@ -19,6 +19,15 @@ scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/au
 creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
 client = gspread.authorize(creds)
 
+# ✅ Write status to B1 in Settings sheet
+def update_status(sheet, message):
+    try:
+        worksheet = sheet.worksheet(SETTINGS_TAB)
+        worksheet.update('B1', message)
+        print(f"📣 Status Updated: {message}")
+    except Exception as e:
+        print("⚠️ Failed to update status:", str(e))
+
 # Read Settings
 def read_settings(sheet):
     rows = sheet.get_all_values()
@@ -128,11 +137,12 @@ def run_backtest(sheet_id: dict):
     def background_job():
         sheet = client.open_by_key(sheet_id["sheet_id"])
         settings = read_settings(sheet.worksheet(SETTINGS_TAB))
-        print("✅ Settings loaded.")
+        update_status(sheet, "📊 Backtest started...")
 
         trade_type = settings.get("Backtest Trade Type", "buy").strip().lower()
         if trade_type not in ["buy", "sell", "both"]:
-            raise ValueError("❌ Invalid Backtest Trade Type")
+            update_status(sheet, "❌ Invalid Backtest Trade Type")
+            return
 
         config = {
             "initial_capital": float(settings.get("Initial Capital $", 1000)),
@@ -146,7 +156,11 @@ def run_backtest(sheet_id: dict):
         end_date = settings["End Date"]
         interval = settings.get("Timeframe", "1d")
 
-        df = fetch_yahoo_data(ticker, start_date, end_date, interval)
+        try:
+            df = fetch_yahoo_data(ticker, start_date, end_date, interval)
+        except Exception as e:
+            update_status(sheet, f"❌ Failed to fetch data: {str(e)}")
+            return
 
         ma_min = int(settings.get("MA Min", 10))
         ma_max = int(settings.get("MA Max", 20))
@@ -157,23 +171,21 @@ def run_backtest(sheet_id: dict):
         diff_step = float(settings.get("Diff Step", 0.002))
         diff_range = np.round(np.arange(diff_min, diff_max + diff_step, diff_step), 3)
 
-        # Initial status update: Backtest Started
-        send_status_update("📊 Backtest started! Check the Result shortly.")
-        
-        # Perform optimization
+        update_status(sheet, "⏳ Optimizing parameters...")
+
         result_df = run_ma_diff_optimization(df, config, trade_type, ma_range, diff_range)
 
-        # Update: Top 10 Results
-        send_status_update("✅ Top 10 result is ready!")
-
-        # Placeholder for Heatmap progress message
-        send_status_update("⏳ # Heatmap processing... (To be implemented)")
-
-        # Placeholder for Equity Curve progress message
-        send_status_update("⏳ # Equity Curve processing... (To be implemented)")
+        update_status(sheet, "✅ Top 10 result is ready!")
 
         write_top_10_to_sheet(result_df, sheet)
-        print("✅ Top 10 written to 'Top 10' tab.")
+
+        # Placeholder statuses for future steps
+        update_status(sheet, "⏳ # Heatmap processing... (To be implemented)")
+        time.sleep(1)
+        update_status(sheet, "⏳ # Equity Curve processing... (To be implemented)")
+        time.sleep(1)
+
+        update_status(sheet, "✅ All outputs completed.")
 
     Thread(target=background_job).start()
-    return {"message": "📊 Backtest started! Check the Result shortly."}
+    return {"message": "📊 Backtest started! You can monitor progress in cell B1."}
