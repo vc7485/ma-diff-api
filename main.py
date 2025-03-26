@@ -7,6 +7,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from gspread_dataframe import set_with_dataframe
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 app = FastAPI()
 
@@ -156,7 +157,20 @@ def run_backtest(sheet_id: dict):
         diff_step = float(settings.get("Diff Step", 0.002))
         diff_range = np.round(np.arange(diff_min, diff_max + diff_step, diff_step), 3)
 
+        # Initial status update: Backtest Started
+        send_status_update("📊 Backtest started! Check the Result shortly.")
+        
+        # Perform optimization
         result_df = run_ma_diff_optimization(df, config, trade_type, ma_range, diff_range)
+
+        # Update: Top 10 Results
+        send_status_update("✅ Top 10 result is ready!")
+
+        # Placeholder for Heatmap progress message
+        send_status_update("⏳ # Heatmap processing... (To be implemented)")
+
+        # Placeholder for Equity Curve progress message
+        send_status_update("⏳ # Equity Curve processing... (To be implemented)")
 
         write_top_10_to_sheet(result_df, sheet)
         print("✅ Top 10 written to 'Top 10' tab.")
