@@ -1,3 +1,5 @@
+import os
+import json
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -7,13 +9,11 @@ from concurrent.futures import ThreadPoolExecutor
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
-from typing import List
 
 app = FastAPI()
 
 class OptimizationRequest(BaseModel):
     spreadsheet_url: str
-    service_account_info: dict
 
 def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate=0.0):
     excess_returns = returns - risk_free_rate / 252
@@ -61,10 +61,8 @@ def run_backtest(ticker, start_date, end_date, ma_period, diff_threshold, trade_
     df['Equity'] = (1 + df['Net_Returns']).cumprod() * initial_capital
 
     total_return = df['Equity'].iloc[-1] - initial_capital
-    roi = (total_return / initial_capital) * 100
     sharpe_ratio = calculate_sharpe_ratio(df['Net_Returns'])
     max_drawdown = ((df['Equity'].cummax() - df['Equity']) / df['Equity'].cummax()).max() * 100
-
     years = (df.index[-1] - df.index[0]).days / 365.25
     cagr = ((df['Equity'].iloc[-1] / initial_capital) ** (1 / years) - 1) * 100 if years > 0 else 0
 
@@ -80,8 +78,12 @@ def run_backtest(ticker, start_date, end_date, ma_period, diff_threshold, trade_
 @app.post("/run-backtest")
 def run_optimization(request: OptimizationRequest):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(request.service_account_info, scope)
+
+    # ✅ Load service account from Render Environment
+    service_account_info = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(service_account_info, scope)
     client = gspread.authorize(creds)
+
     sheet = client.open_by_url(request.spreadsheet_url).worksheet("Settings")
     config = get_sheet_config(sheet)
 
@@ -101,7 +103,6 @@ def run_optimization(request: OptimizationRequest):
     diff_step = float(config.get("Diff Step", 0.5))
 
     results = []
-
     with ThreadPoolExecutor() as executor:
         futures = []
         for ma in range(ma_min, ma_max + 1):
@@ -128,5 +129,3 @@ def run_optimization(request: OptimizationRequest):
     output_sheet.update("A1", values)
 
     return {"status": "✅ Top 10 result updated based on trade type: " + trade_type}
-
-
